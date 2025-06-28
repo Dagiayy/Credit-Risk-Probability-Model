@@ -82,6 +82,30 @@ def detect_outliers(df):
         outlier_data[col] = len(outliers)
 
     return outlier_data
+def add_outlier_flags(df):
+    """
+    Adds new boolean columns indicating if a value in certain numeric columns is an outlier based on IQR method.
+    Drops 'CountryCode' column as it has no variance.
+    """
+    # Drop constant column
+    if 'CountryCode' in df.columns:
+        df = df.drop(columns=['CountryCode'])
+
+    numeric_cols = ['Amount', 'Value', 'PricingStrategy']
+    for col in numeric_cols:
+        if col in df.columns:
+            q1 = df[col].quantile(0.25)
+            q3 = df[col].quantile(0.75)
+            iqr = q3 - q1
+            lower_bound = q1 - 1.5 * iqr
+            upper_bound = q3 + 1.5 * iqr
+            
+            # Create flag column, 1 if outlier, 0 otherwise
+            flag_col = f"{col}_outlier_flag"
+            df[flag_col] = ((df[col] < lower_bound) | (df[col] > upper_bound)).astype(int)
+
+    return df
+
 
 def plot_boxplots(df, output_folder="notebooks/plots/boxplots/"):
     os.makedirs(output_folder, exist_ok=True)
