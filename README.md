@@ -8,7 +8,7 @@ The system outputs:
 - A **credit score (human-friendly scale)**
 - An estimate of the **optimal loan amount and duration**
 
----
+
 
 ## 📂 Project Structure
 
