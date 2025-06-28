@@ -1,41 +1,48 @@
 
 # 🏦 Credit Risk Probability Model
 
-This project is developed as part of Bati Bank’s initiative to enable a Buy-Now-Pay-Later (BNPL) credit offering for an eCommerce partnership. The objective is to predict the creditworthiness of customers using behavioral data, such as purchase frequency, monetary spend, and recency (RFM), in the absence of traditional credit history.
+This project is part of **Bati Bank's** initiative to enable a **Buy-Now-Pay-Later (BNPL)** credit offering for an eCommerce partner.  
+It aims to predict customer creditworthiness based on behavioral data, enabling responsible lending decisions without relying on traditional credit histories.
 
-The system outputs:
-- A **risk probability score**
-- A **credit score (human-friendly scale)**
-- An estimate of the **optimal loan amount and duration**
+---
 
+## 📈 Project Goals
 
+- Build a **proxy variable** to categorize customers into *high-risk* and *low-risk* based on their transaction behavior.
+- Engineer predictive features from transaction data using RFM (Recency, Frequency, Monetary) metrics.
+- Develop models to output:
+  - A **risk probability score** indicating default likelihood.
+  - A **credit score** on a human-friendly scale.
+  - Recommendations for **optimal loan amount and duration**.
+
+---
 
 ## 📂 Project Structure
 
 ```
 
 credit-risk-model/
-├── .github/workflows/ci.yml       # CI/CD pipeline
-├── data/                          # Raw and processed data (not tracked by Git)
-│   ├── raw/
-│   └── processed/
+├── .github/workflows/ci.yml       # CI/CD pipeline configuration
+├── data/                          # Data folder (ignored by Git)
+│   ├── raw/                      # Raw data files
+│   └── processed/                # Processed data for modeling
 ├── notebooks/
-│   └── 1.0-eda.ipynb              # EDA and RFM exploration
+│   └── 1.0-eda.ipynb             # Exploratory Data Analysis (Task 2)
 ├── src/
 │   ├── **init**.py
-│   ├── data\_processing.py         # Feature engineering logic
-│   ├── train.py                   # Model training script
-│   ├── predict.py                 # Inference script
+│   ├── data\_processing.py        # Feature engineering and data processing scripts
+│   ├── train.py                  # Model training logic
+│   ├── predict.py                # Inference logic
 │   └── api/
-│       ├── main.py                # FastAPI app for serving model
-│       └── pydantic\_models.py     # Request/response schemas
+│       ├── main.py               # FastAPI app to serve the model
+│       └── pydantic\_models.py    # API schemas
 ├── tests/
-│   └── test\_data\_processing.py    # Unit tests
-├── Dockerfile                     # Docker config
-├── docker-compose.yml             # Compose file
-├── requirements.txt               # Python dependencies
-├── .gitignore                     # Ignore data and environments
-└── README.md                      # Project documentation
+│   └── test\_data\_processing.py  # Unit tests
+├── Dockerfile                    # Docker configuration
+├── docker-compose.yml            # Docker compose for local dev/testing
+├── requirements.txt              # Python dependencies
+├── .gitignore                    # Ignored files (data, envs)
+└── README.md                     # Project documentation
 
 ````
 
@@ -43,80 +50,106 @@ credit-risk-model/
 
 ## 🧠 Credit Scoring Business Understanding
 
-### 1. **Basel II and the Need for Interpretability**
+### Basel II and Regulatory Context
 
-The **Basel II Accord** emphasizes three pillars: minimum capital requirements, supervisory review, and market discipline. In the context of credit risk, it mandates that financial institutions implement **internal risk models** that are **transparent**, **auditable**, and based on **quantifiable measures** of borrower risk.
+Bati Bank’s credit risk modeling follows the **Basel II Accord**, which requires transparent, auditable risk models that:
 
-As a result, our model must:
-- Be **interpretable** enough for internal audit, regulatory bodies, and business stakeholders.
-- Provide **documentation and traceability** for how credit scores are assigned.
-- Avoid black-box predictions that can't explain **why** a customer was approved or denied.
-
-This requirement favors models that balance predictive power with explainability.
+- Use quantifiable risk metrics.
+- Are interpretable by regulators and stakeholders.
+- Enable informed, explainable lending decisions.
 
 ---
 
-### 2. **Why We Use a Proxy Variable (and the Risks)**
+### Proxy Variable for Default Risk
 
-Since we **don’t have a direct “default” label** (e.g., loan repayment history), we must create a **proxy variable** to indicate whether a customer behaves like a “high-risk” or “low-risk” borrower. Examples include:
-- Frequent late payments
-- Excessive returns
-- Abrupt purchase stoppage
-
-**Why it’s necessary**:
-- Supervised machine learning requires a target variable.
-- Proxy variables allow us to train predictive models when true default data isn’t available.
-
-**Business risks of relying on a proxy**:
-- **Label noise**: Our proxy may misclassify customers, reducing model accuracy.
-- **Bias**: If the proxy is based on flawed logic or limited data, it can introduce bias.
-- **Regulatory challenge**: Regulators may scrutinize models built on proxies if the definition is unclear or unvalidated.
+Since direct loan default data is unavailable, we define a **proxy variable** reflecting customer risk through transaction behavior patterns (e.g., purchase frequency, returns). This proxy allows supervised learning but must be carefully validated to avoid bias or regulatory issues.
 
 ---
 
-### 3. **Model Interpretability vs. Performance Trade-offs**
+### Model Interpretability vs. Performance
 
-| Feature                            | Simple Model (e.g., Logistic Regression + WoE) | Complex Model (e.g., Gradient Boosting) |
-|------------------------------------|-----------------------------------------------|------------------------------------------|
-| Interpretability                   | High (easy to explain to regulators)          | Low (requires SHAP or LIME to explain)   |
-| Regulatory approval                | Easier                                        | Harder due to black-box nature           |
-| Training speed                     | Fast                                          | Slower                                   |
-| Predictive power                   | Moderate                                      | High                                     |
-| Auditability                       | Excellent                                     | Requires external tools                  |
-| Flexibility with imbalanced data   | Requires preprocessing                        | Handles natively                         |
+| Model Type             | Interpretability         | Predictive Power         | Regulatory Ease         |
+|------------------------|-------------------------|-------------------------|------------------------|
+| Logistic Regression + WoE | High (easy to explain)   | Moderate                | Easier                 |
+| Gradient Boosting (GBM) | Low (black-box)          | High                    | Requires explainability tools (SHAP/LIME) |
 
-In **regulated contexts like banking**, we often start with interpretable models to pass compliance checks. Then, depending on business need and risk appetite, we may blend in more powerful models — but only if we include **explainability techniques** and **robust validation**.
+Initial models favor interpretability with potential later enhancement.
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Task 1: Setup & Initial Project Structure
 
-### Run FastAPI with Docker:
+- Established a **modular and maintainable** folder structure.
+- Created scripts for **data loading, processing, training, inference**, and **API serving**.
+- Configured **Docker** and **CI/CD pipelines** for reproducibility.
+
+---
+
+## 🔍 Task 2: Exploratory Data Analysis (EDA)
+
+Performed extensive EDA using Jupyter Notebook (`notebooks/1.0-eda.ipynb`):
+
+- Dataset shape: **95,662 transactions, 16 features**
+- Data types and distributions assessed.
+- No missing values detected.
+- Significant outliers identified in `Amount`, `Value`, and `PricingStrategy`.
+- Added **outlier flag features** to enhance model awareness of extreme transactions.
+- Dropped constant column `CountryCode` due to zero variance.
+- Correlation matrix and categorical distributions visualized inline.
+- Saved cleaned data to `data/processed/data_cleaned.csv`.
+
+---
+
+### 🔧 Recommendations for Feature Engineering (Task 3)
+
+- **Log-transform** skewed numeric variables (`Amount`, `Value`).
+- Use **outlier flags** as model features or cap extreme values.
+- Extract **time-based features** from `TransactionStartTime` (hour, day, month).
+- Apply **one-hot encoding** for categorical variables (`ProductCategory`, `ChannelId`, `ProviderId`).
+- Aggregate by `CustomerId` to calculate **RFM metrics** (Recency, Frequency, Monetary).
+- Employ **Weight of Evidence (WoE)** and **Information Value (IV)** for feature ranking and selection.
+
+---
+
+## 🧪 Quickstart Guide
+
+### Prerequisites
+
+- Install [Docker](https://docs.docker.com/get-docker/)  
+- Python 3.12 (if running locally outside Docker)
+
+### Run the API with Docker Compose
+
 ```bash
 docker-compose up --build
 ````
 
-Visit: [http://localhost:8000/docs](http://localhost:8000/docs) to test the API.
+Access API docs at: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
-## 🧪 Future Enhancements
+## 📚 References & Further Reading
 
-* Integration with real-time credit approval systems
-* Auto-retraining pipelines with Airflow
-* Explainability module (SHAP/LIME) for regulators
-* Integration with payment gateway API
-
----
-
-## 📚 References
-
-* [Statistica Credit Scoring Research](https://www3.stat.sinica.edu.tw/statistica/oldpdf/A28n535.pdf)
-* [HKMA Alternative Scoring](https://www.hkma.gov.hk/media/eng/doc/key-functions/financial-infrastructure/alternative_credit_scoring.pdf)
-* [World Bank Credit Scoring Guidelines](https://thedocs.worldbank.org/en/doc/935891585869698451-0130022020/original/CREDITSCORINGAPPROACHESGUIDELINESFINALWEB.pdf)
-* [How to Build a Credit Scorecard](https://towardsdatascience.com/how-to-develop-a-credit-risk-model-and-scorecard-91335fc01f03)
+* [Basel II Accord Summary](https://www.bis.org/publ/bcbs128.pdf)
+* [Credit Scoring Approaches – World Bank](https://thedocs.worldbank.org/en/doc/935891585869698451-0130022020/original/CREDITSCORINGAPPROACHESGUIDELINESFINALWEB.pdf)
+* [How to Build a Credit Scorecard (Towards Data Science)](https://towardsdatascience.com/how-to-develop-a-credit-risk-model-and-scorecard-91335fc01f03)
 * [CFI Credit Risk Guide](https://corporatefinanceinstitute.com/resources/commercial-lending/credit-risk/)
-* [Risk Officer Credit Risk Summary](https://www.risk-officer.com/Credit_Risk.htm)
+* [Explainable AI (SHAP/LIME) for Credit Models](https://christophm.github.io/interpretable-ml-book/)
+
+---
+
+## 🛠 Future Work
+
+* Integrate real-time credit approvals with external APIs.
+* Develop auto-retraining and monitoring pipelines.
+* Enhance model explainability for compliance.
+* Expand model scope with alternative data sources.
+
+---
+
+Thank you for reviewing this project! Feel free to contribute or raise issues.
+
+```
 
 ---
 
