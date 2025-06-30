@@ -34,13 +34,13 @@ credit-risk-model/
 │   ├── __init__.py
 │   ├── data_processing.py          # Feature engineering and data processing scripts
 │   ├── feature_eng_process.py      # Feature engineering pipeline including WOE/IV encoding
-│   ├── train.py                    # Model training logic
-│   ├── predict.py                  # Inference logic
+│   ├── train.py                    # Model training logic (Task 4 & 5)
+│   ├── predict.py                  # Inference logic (Task 5)
 │   └── api/
 │       ├── main.py                 # FastAPI app to serve the model
 │       └── pydantic_models.py      # API schemas
 ├── tests/
-│   └── test_data_processing.py    # Unit tests
+│   └── test_data_processing.py    # Unit tests (Task 5)
 ├── Dockerfile                      # Docker configuration
 ├── docker-compose.yml              # Docker compose for local dev/testing
 ├── requirements.txt                # Python dependencies
@@ -92,6 +92,30 @@ python src/feature_eng_process.py
   Feature: ChannelId, IV: 1.2231
   Feature: ProviderId, IV: 3.3227
   ```
+
+---
+
+## Model Training & Experiment Tracking (Task 4 & 5)
+
+### Model Training & Logging (Task 4)
+
+* Implemented training scripts in `src/train.py` for Logistic Regression and Random Forest models.
+* Models are trained on preprocessed features and evaluated using accuracy, precision, recall, F1 score, and ROC-AUC metrics.
+* MLflow is integrated to track experiments, log parameters, metrics, and save models.
+* Model registration and versioning are handled through MLflow Model Registry, enabling controlled deployment and model lifecycle management.
+
+### Model Inference Script (Task 5)
+
+* Created `src/predict.py` to load the registered model from MLflow Model Registry for prediction.
+* The script demonstrates loading model version (or stage), preprocessing input features consistently, and outputting predictions.
+* Added error handling for missing model versions or stage.
+* Includes sample usage with processed feature CSV file.
+
+### Unit Testing (Task 5)
+
+* Added unit tests under `tests/test_data_processing.py` to validate data preprocessing functions.
+* Tests ensure that feature selection, target separation, and handling of non-feature columns are consistent and reliable.
+* Facilitates code robustness and maintainability.
 
 ---
 
