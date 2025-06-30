@@ -35,6 +35,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+# Ignore MLflow runs folder (experiment data, artifacts, logs)
+mlruns/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
