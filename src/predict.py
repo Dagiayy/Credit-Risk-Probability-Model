@@ -21,6 +21,7 @@ if __name__ == "__main__":
     if 'is_high_risk' in df.columns:
         df = df.drop(columns=['is_high_risk'])
 
+
     X = df
     predictions = predict(X)
     print(predictions)

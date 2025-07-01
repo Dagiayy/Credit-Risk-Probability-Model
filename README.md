@@ -1,177 +1,241 @@
 
+
 # Credit Risk Probability Model
 
 ## Overview
 
-This project is part of **Bati Bank's** initiative to enable a **Buy-Now-Pay-Later (BNPL)** credit offering for an eCommerce partner.
-It aims to predict customer creditworthiness based on transaction behavior, enabling responsible lending decisions without relying on traditional credit histories.
+This project is part of **Bati Bank's initiative** to enable a Buy-Now-Pay-Later (BNPL) credit offering for an eCommerce partner. It predicts customer creditworthiness based on transaction behavior — enabling responsible lending decisions without relying on traditional credit histories.
 
 ---
 
-## Project Goals
+## 🔍 Project Goals
 
-* Build a **proxy variable** to categorize customers into *high-risk* and *low-risk* based on transaction behavior.
-* Engineer predictive features using RFM (Recency, Frequency, Monetary) metrics and behavioral patterns.
-* Develop models that output:
+* Build a proxy variable to classify customers as **high-risk or low-risk** based on transactions.
+* Engineer predictive features using **RFM metrics** and behavior patterns.
+* Train models to output:
 
-  * A **risk probability score** indicating likelihood of default.
-  * A **credit score** on a human-friendly scale.
-  * Recommendations for **optimal loan amount and duration**.
+  * ✅ A **risk probability score** (likelihood of default)
+  * ✅ A **credit score** (on a human-friendly scale)
+  * ✅ **Loan amount/duration** recommendations
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
 ```
 credit-risk-model/
-├── .github/workflows/ci.yml          # CI/CD pipeline configuration
-├── data/                            # Data folder (ignored by Git)
-│   ├── raw/                        # Raw data files
-│   └── processed/                  # Processed data for modeling
+├── .github/workflows/ci.yml        # ✅ CI/CD Pipeline (Task 6)
+├── data/                           # Raw + processed data
 ├── notebooks/
 │   └── 1.0-eda.ipynb               # Exploratory Data Analysis
 ├── src/
-│   ├── __init__.py
-│   ├── data_processing.py          # Feature engineering and data processing scripts
-│   ├── feature_eng_process.py      # Feature engineering pipeline including WOE/IV encoding
-│   ├── train.py                    # Model training logic (Task 4 & 5)
-│   ├── predict.py                  # Inference logic (Task 5)
-│   └── api/
-│       ├── main.py                 # FastAPI app to serve the model
-│       └── pydantic_models.py      # API schemas
+│   ├── train.py                    # Model training (Task 4 & 5)
+│   ├── predict.py                  # Inference script (Task 5)
+│   ├── data_processing.py          # Preprocessing utils
+│   ├── feature_eng_process.py      # Full feature pipeline
+│   └── api/                        # ✅ FastAPI Inference API (Task 6)
+│       ├── main.py                 # FastAPI app
+│       └── pydantic_models.py      # Input/output schemas
 ├── tests/
-│   └── test_data_processing.py    # Unit tests (Task 5)
-├── Dockerfile                      # Docker configuration
-├── docker-compose.yml              # Docker compose for local dev/testing
-├── requirements.txt                # Python dependencies
-├── .gitignore                     # Ignored files (data, envs)
-└── README.md                      # Project documentation
+│   └── test_data_processing.py     # Unit tests (Task 5)
+├── Dockerfile                      # ✅ Docker container config (Task 6)
+├── docker-compose.yml              # ✅ Docker services incl. MLflow + API (Task 6)
+├── requirements.txt                # Python deps
+├── .gitignore                      # Ignore data/env
+└── README.md                       # You’re here!
 ```
 
 ---
 
-## Data Processing & Feature Engineering
+## 🔬 Data Processing & Feature Engineering
 
-### Exploratory Data Analysis (EDA)
+### 🔎 Exploratory Data Analysis
 
-* Performed on the dataset of \~95,000 transactions.
-* Checked distributions, missing values, outliers, and correlations.
-* Added outlier flags and dropped constant columns.
-* Saved cleaned data to `data/processed/data_cleaned.csv`.
+* \~95,000 transactions
+* Handled missing values, outliers, date features
+* Dropped constant/redundant features
+* Saved result to `data/processed/data_cleaned.csv`
 
-### Feature Engineering Highlights
+### 🧠 Feature Engineering (`feature_eng_process.py`)
 
-* **Aggregation by CustomerId:** Generates customer-level summary features such as total spend, average transaction, and transaction count to capture spending behavior.
-* **Datetime features:** Extract hour, day, month, and year from transaction timestamps to capture temporal patterns.
-* **Missing value imputation:** Fills missing categorical values with the most common category; numeric missing values with the median.
-* **Normalization:** Standardizes numeric features to zero mean and unit variance for better model performance.
-* **Weight of Evidence (WOE) encoding:**
-  Converts categorical variables into numeric features reflecting their relationship with fraud/default risk, calculated using the `optbinning` package. This improves interpretability and model quality over one-hot encoding.
-* **Information Value (IV) calculation:**
-  Measures the predictive power of each categorical feature to help with feature selection.
+* Aggregates customer-level behavior (total spend, tx count, avg tx)
+* Extracts **hour, day, month** from timestamps
+* Fills missing values (mode/median)
+* Applies **WOE encoding** to categorical features (optbinning)
+* Calculates **Information Value (IV)** for feature selection
+* Scales numerical values (StandardScaler)
+* Outputs: `data/processed/feature_engineered_data.csv`
 
----
-
-## Running Feature Engineering
-
-The feature engineering pipeline is implemented in `src/feature_eng_process.py`.
-
-**To run:**
+To run:
 
 ```bash
 python src/feature_eng_process.py
 ```
 
-* Reads cleaned data.
-* Applies aggregation, datetime extraction, imputation, WOE encoding, and numeric scaling.
-* Outputs processed dataset with engineered features to `data/processed/feature_engineered_data.csv`.
-* Prints Information Value (IV) for categorical features, e.g.:
-
-  ```
-  Feature: ProductCategory, IV: 1.0636
-  Feature: ChannelId, IV: 1.2231
-  Feature: ProviderId, IV: 3.3227
-  ```
-
 ---
 
-## Model Training & Experiment Tracking (Task 4 & 5)
+## 🤖 Model Training & MLflow Tracking
 
-### Model Training & Logging (Task 4)
+### 🏗️ Training & Evaluation (`src/train.py`)
 
-* Implemented training scripts in `src/train.py` for Logistic Regression and Random Forest models.
-* Models are trained on preprocessed features and evaluated using accuracy, precision, recall, F1 score, and ROC-AUC metrics.
-* MLflow is integrated to track experiments, log parameters, metrics, and save models.
-* Model registration and versioning are handled through MLflow Model Registry, enabling controlled deployment and model lifecycle management.
+* Trains **Logistic Regression** and **Random Forest**
+* Uses:
 
-### Model Inference Script (Task 5)
+  * Accuracy, Precision, Recall, F1, ROC-AUC
+* Integrated with **MLflow**:
 
-* Created `src/predict.py` to load the registered model from MLflow Model Registry for prediction.
-* The script demonstrates loading model version (or stage), preprocessing input features consistently, and outputting predictions.
-* Added error handling for missing model versions or stage.
-* Includes sample usage with processed feature CSV file.
+  * Logs metrics, artifacts
+  * Registers model under `CreditRiskModel`
+  * Adds tags for "stage", "promoted\_by"
 
-### Unit Testing (Task 5)
-
-* Added unit tests under `tests/test_data_processing.py` to validate data preprocessing functions.
-* Tests ensure that feature selection, target separation, and handling of non-feature columns are consistent and reliable.
-* Facilitates code robustness and maintainability.
-
----
-
-## Business Context & Model Interpretability
-
-This project complies with **Basel II** requirements for transparent and auditable credit risk models.
-Using WOE encoding and logistic regression models enables:
-
-* **Interpretability:** Regulators and business users can understand how features affect risk.
-* **Performance:** Captures meaningful patterns in customer transaction behavior.
-* **Responsible lending:** Helps Bati Bank extend BNPL credit safely.
-
----
-
-## Next Steps & Future Work
-
-* Integrate model inference with real-time APIs for automated credit decisions.
-* Develop auto-retraining pipelines to keep models up-to-date.
-* Incorporate alternative data sources for richer risk insights.
-* Expand explainability tools (SHAP/LIME) for black-box models.
-* Fine-tune thresholds for risk categories and loan terms.
-
----
-
-## Prerequisites & Quickstart
-
-* Python 3.12 or later
-* Recommended: Docker & Docker Compose (for easy environment setup)
-* Install dependencies:
+### 🔁 Sample CLI:
 
 ```bash
-pip install -r requirements.txt
+python src/train.py
 ```
 
-* Run API locally:
+---
+
+## 🧪 Unit Testing
+
+Unit tests (`test_data_processing.py`) validate:
+
+* Column dropping
+* Target splitting
+* Input-output formats
+
+To run:
+
+```bash
+pytest tests/
+```
+
+---
+
+## ⚙️ Inference (`src/predict.py`)
+
+* Loads model from **MLflow Model Registry**
+* Takes processed input and returns:
+
+  * `is_high_risk`: True/False
+  * `probability`: Risk score
+
+---
+
+## 🚀 Task 6 – Model Deployment with FastAPI + CI/CD
+
+### ✅ FastAPI API (`src/api/main.py`)
+
+* `/predict` endpoint
+* Validates input via **Pydantic**
+* Loads model from MLflow
+* Returns credit risk prediction
+
+### ✅ Pydantic Schemas (`src/api/pydantic_models.py`)
+
+* `PredictionInput`: Defines required model features
+* `PredictionOutput`: Defines response schema
+
+### 🔧 Run API Locally
 
 ```bash
 docker-compose up --build
 ```
 
-Access API documentation: `http://localhost:8000/docs`
+Access docs at: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
-## References
+### 🧪 GitHub CI/CD Pipeline (`.github/workflows/ci.yml`)
 
-* [Basel II Accord Summary (BIS)](https://www.bis.org/publ/bcbs128.pdf)
-* [Credit Scoring Approaches – World Bank](https://thedocs.worldbank.org/en/doc/935891585869698451-0130022020/original/CREDITSCORINGAPPROACHESGUIDELINESFINALWEB.pdf)
-* [How to Build a Credit Scorecard](https://towardsdatascience.com/how-to-develop-a-credit-risk-model-and-scorecard-91335fc01f03)
-* [Corporate Finance Institute - Credit Risk](https://corporatefinanceinstitute.com/resources/commercial-lending/credit-risk/)
-* [Explainable AI for Credit Models (Interpretable ML Book)](https://christophm.github.io/interpretable-ml-book/)
+* Runs on push/pull to `main`
+* Steps:
+
+  * Install dependencies
+  * Run `flake8` linting
+  * Run `pytest`
+
+```yaml
+# Simplified
+on: [push]
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: flake8 src/
+      - run: pytest tests/
+```
 
 ---
 
-Thank you for reviewing this project!
-Contributions and issues are welcome.
+## 🐳 Docker Setup
+
+### Dockerfile
+
+Builds image for model training and API inference.
+
+### docker-compose.yml
+
+* Starts **MLflow server**
+* Starts **credit-risk-api** (FastAPI)
+* Mounts volume for model artifacts
 
 ---
 
+## 📊 Business Value
+
+* Aligned with **Basel II** for explainable credit models
+* Enables **responsible BNPL lending**
+* Supports **regulatory transparency** via WOE encoding & scoring
+
+---
+
+## 🛠️ Next Steps
+
+* Integrate with **real-time API scoring**
+* Add **auto-retraining** + drift detection
+* Use **SHAP/LIME** for black-box explainability
+* Expand feature set using **alternative data sources**
+* Add **loan recommendation engine**
+
+---
+
+## ✅ Quickstart
+
+```bash
+# 1. Clone the repo
+git clonehttps://github.com/Dagiayy/Credit-Risk-Probability-Model.git.git
+cd credit-risk-model
+
+# 2. Install deps
+pip install -r requirements.txt
+
+# 3. Run model training
+python src/train.py
+
+# 4. Run API in Docker
+docker-compose up --build
+
+# 5. Access
+MLflow:         http://localhost:5000
+API docs:       http://localhost:8000/docs
+```
+
+---
+
+## 📚 References
+
+* [Basel II Accord – BIS](https://www.bis.org)
+* [World Bank Credit Scoring](https://worldbank.org)
+* [Interpretable Machine Learning (SHAP, WOE)](https://christophm.github.io/interpretable-ml-book/)
+
+---
+
+> 🙏 Thank you for reviewing this project! Contributions, feedback, and improvements are welcome.
+
+---
