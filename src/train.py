@@ -7,14 +7,17 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 )
-import mlflow # type: ignore
-import mlflow.sklearn # type: ignore
-from mlflow.models.signature import infer_signature # type: ignore
+import mlflow  # type: ignore
+import mlflow.sklearn  # type: ignore
+from mlflow.models.signature import infer_signature  # type: ignore
+from mlflow.tracking import MlflowClient  # type: ignore
+import os
 
 # Constants
 RANDOM_STATE = 42
 EXPERIMENT_NAME = "Credit Risk Modeling"
 DATA_PATH = "data/processed/feature_engineered_labeled.csv"
+FEATURE_OUTPUT_PATH = "data/processed/feature_names.txt"
 
 def load_data(path):
     return pd.read_csv(path)
@@ -61,11 +64,9 @@ def train_and_log_model(name, model, params, X_train, y_train, X_test, y_test):
         mlflow.log_params(params)
         mlflow.log_metrics(metrics)
 
-        # Prepare input example and signature for model logging
         input_example = X_test.iloc[:1]
         signature = infer_signature(X_test, model.predict(X_test))
 
-        # Log model with signature
         mlflow.sklearn.log_model(
             model,
             artifact_path=name.lower() + "_model",
@@ -77,9 +78,16 @@ def train_and_log_model(name, model, params, X_train, y_train, X_test, y_test):
         for metric, value in metrics.items():
             print(f"{metric}: {value:.4f}")
 
+        os.makedirs(os.path.dirname(FEATURE_OUTPUT_PATH), exist_ok=True)
+        with open(FEATURE_OUTPUT_PATH, "w") as f:
+            f.write("\n".join(X_train.columns.tolist()))
+        print(f"📝 Feature names written to {FEATURE_OUTPUT_PATH}")
+
         return model, run_id
 
 def main():
+    # ✅ Dynamically detect MLflow URI (default to localhost)
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000"))
     mlflow.set_experiment(EXPERIMENT_NAME)
 
     print("📥 Loading and preprocessing data...")
@@ -98,15 +106,23 @@ def main():
     lr_params = {'C': 1.0, 'solver': 'lbfgs', 'max_iter': 500}
     train_and_log_model("LogisticRegression", lr_model, lr_params, X_train, y_train, X_test, y_test)
 
-    # Random Forest (we will register this one)
+    # Random Forest
     rf_model = RandomForestClassifier()
     rf_params = {'n_estimators': 100, 'max_depth': 5, 'random_state': RANDOM_STATE}
     rf_model, run_id = train_and_log_model("RandomForest", rf_model, rf_params, X_train, y_train, X_test, y_test)
 
-    # Build the model URI and register it
+    # Register model
     model_uri = f"runs:/{run_id}/randomforest_model"
     print(f"📦 Registering the RandomForest model from URI: {model_uri}")
-    mlflow.register_model(model_uri=model_uri, name="CreditRiskModel")
+    result = mlflow.register_model(model_uri=model_uri, name="CreditRiskModel")
+    version = result.version
+
+    # ✅ Add custom tags instead of deprecated stage
+    client = MlflowClient()
+    client.set_model_version_tag("CreditRiskModel", version, "stage", "production")
+    client.set_model_version_tag("CreditRiskModel", version, "promoted_by", "dagmawi")
+
+    print(f"🚀 Model version {version} tagged as 'production'")
 
 if __name__ == "__main__":
     main()
