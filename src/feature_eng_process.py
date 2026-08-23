@@ -1,154 +1,220 @@
-import pandas as pd
+"""Customer-level feature engineering.
+
+Design note — the most important fix in this module vs. the original
+implementation:
+
+The original pipeline engineered features at *transaction* grain: it merged
+each customer's aggregate stats (total spend, avg spend, ...) onto every one
+of that customer's transaction rows, then trained a model on those rows
+directly. That has two serious, non-obvious problems for a model whose
+target ("is this *customer* high risk?") is inherently defined at customer
+grain:
+
+1. **Leakage** — a customer's aggregate features (e.g. `total_transaction_amount`)
+   are computed from *all* of that customer's transactions, including ones
+   that would later land in the test split. Every training row for that
+   customer already "knows" about its own held-out siblings.
+2. **Pseudo-replication** — every transaction of a customer carries the same
+   label, so a customer with 500 transactions is (silently) worth 500x the
+   weight of a customer with 1 transaction in training and in every metric.
+   Train/test splits done at the row level also let the same customer appear
+   on both sides of the split.
+
+The fix: aggregate to **one row per `CustomerId`** first, and only then
+impute/encode/scale. This makes the model's unit of prediction match its
+unit of training, and makes a customer-level train/test split leak-free by
+construction (see `train.py`).
+"""
+from __future__ import annotations
+
 import numpy as np
-from sklearn.base import BaseEstimator, TransformerMixin
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from sklearn.impute import SimpleImputer
 
-# --------- Custom Transformers ------------
+from src.config import settings
+from src.data_processing import add_outlier_flags
+from src.logging_utils import get_logger
 
-class AggregateFeatures(BaseEstimator, TransformerMixin):
-    def __init__(self, group_col='CustomerId'):
-        self.group_col = group_col
-        self.agg_features_ = None
-
-    def fit(self, X, y=None):
-        agg_df = X.groupby(self.group_col).agg(
-            total_transaction_amount=('Amount', 'sum'),
-            avg_transaction_amount=('Amount', 'mean'),
-            transaction_count=('Amount', 'count'),
-            std_transaction_amount=('Amount', 'std')
-        ).reset_index()
-        agg_df['std_transaction_amount'] = agg_df['std_transaction_amount'].fillna(0)
-        self.agg_features_ = agg_df
-        return self
-
-    def transform(self, X):
-        X = X.merge(self.agg_features_, on=self.group_col, how='left')
-        return X
-
-class DatetimeFeatures(BaseEstimator, TransformerMixin):
-    def __init__(self, datetime_col='TransactionStartTime'):
-        self.datetime_col = datetime_col
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        X = X.copy()
-        X[self.datetime_col] = pd.to_datetime(X[self.datetime_col], errors='coerce')
-        X['transaction_hour'] = X[self.datetime_col].dt.hour
-        X['transaction_day'] = X[self.datetime_col].dt.day
-        X['transaction_month'] = X[self.datetime_col].dt.month
-        X['transaction_year'] = X[self.datetime_col].dt.year
-        return X
-
-class CategoricalImputer(BaseEstimator, TransformerMixin):
-    def __init__(self, categorical_cols):
-        self.categorical_cols = categorical_cols
-        self.fill_values_ = {}
-
-    def fit(self, X, y=None):
-        for col in self.categorical_cols:
-            self.fill_values_[col] = X[col].mode()[0]
-        return self
-
-    def transform(self, X):
-        X = X.copy()
-        for col in self.categorical_cols:
-            X[col] = X[col].fillna(self.fill_values_[col])
-        return X
-
-class CategoricalEncoder(BaseEstimator, TransformerMixin):
-    def __init__(self, categorical_cols):
-        self.categorical_cols = categorical_cols
-        self.ohe = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
-
-    def fit(self, X, y=None):
-        self.ohe.fit(X[self.categorical_cols])
-        return self
-
-    def transform(self, X):
-        ohe_array = self.ohe.transform(X[self.categorical_cols])
-        ohe_df = pd.DataFrame(ohe_array, columns=self.ohe.get_feature_names_out(self.categorical_cols))
-        ohe_df.index = X.index
-        X = X.drop(columns=self.categorical_cols)
-        X = pd.concat([X, ohe_df], axis=1)
-        return X
+logger = get_logger(__name__)
 
 
-class NumericImputerScaler(BaseEstimator, TransformerMixin):
-    def __init__(self, numeric_cols):
-        self.numeric_cols = numeric_cols
-        self.imputer = SimpleImputer(strategy='median')
-        self.scaler = StandardScaler()
+def _mode_or_nan(series: pd.Series):
+    m = series.mode()
+    return m.iloc[0] if not m.empty else None
 
-    def fit(self, X, y=None):
-        X_num = X[self.numeric_cols]
-        X_imputed = self.imputer.fit_transform(X_num)
-        self.scaler.fit(X_imputed)
-        return self
 
-    def transform(self, X):
-        X_num = X[self.numeric_cols]
-        X_imputed = self.imputer.transform(X_num)
-        X_scaled = self.scaler.transform(X_imputed)
-        X_scaled_df = pd.DataFrame(X_scaled, columns=self.numeric_cols, index=X.index)
-        X = X.drop(columns=self.numeric_cols)
-        X = pd.concat([X, X_scaled_df], axis=1)
-        return X
+def build_customer_features(
+    df: pd.DataFrame,
+    numeric_cols: list[str] | None = None,
+    categorical_cols: list[str] | None = None,
+    group_col: str = "CustomerId",
+) -> pd.DataFrame:
+    """Collapse a transaction-level dataframe into one row per customer.
 
-# --------- WOE/IV Calculation ------------
+    Returns a dataframe with `group_col` plus behavioural/RFM-style features.
+    This is the grain the model is actually trained and served at.
+    """
+    numeric_cols = numeric_cols or settings.numeric_cols
+    categorical_cols = categorical_cols or settings.categorical_cols
 
-def calculate_woe_iv(df, categorical_cols, target_col='FraudResult'):
-    iv_dict = {}
-    eps = 0.0001  # To prevent division by zero
+    df = df.copy()
+    df["TransactionStartTime"] = pd.to_datetime(df["TransactionStartTime"], errors="coerce")
+    df = add_outlier_flags(df, numeric_cols=numeric_cols)
+
+    snapshot_date = df["TransactionStartTime"].max() + pd.Timedelta(days=1)
+
+    numeric_agg = (
+        df.groupby(group_col)["Amount"]
+        .agg(
+            total_transaction_amount="sum",
+            avg_transaction_amount="mean",
+            std_transaction_amount="std",
+            transaction_count="count",
+            min_transaction_amount="min",
+            max_transaction_amount="max",
+        )
+        .reset_index()
+    )
+    numeric_agg["std_transaction_amount"] = numeric_agg["std_transaction_amount"].fillna(0)
+
+    recency_tenure = (
+        df.groupby(group_col)["TransactionStartTime"]
+        .agg(first_transaction="min", last_transaction="max")
+        .reset_index()
+    )
+    recency_tenure["recency_days"] = (
+        snapshot_date - recency_tenure["last_transaction"]
+    ).dt.days
+    recency_tenure["tenure_days"] = (
+        recency_tenure["last_transaction"] - recency_tenure["first_transaction"]
+    ).dt.days
+    recency_tenure = recency_tenure.drop(columns=["first_transaction", "last_transaction"])
+
+    outlier_rate_cols = [f"{c}_outlier_flag" for c in numeric_cols if f"{c}_outlier_flag" in df.columns]
+    outlier_rates = (
+        df.groupby(group_col)[outlier_rate_cols].mean().reset_index() if outlier_rate_cols else None
+    )
+
+    categorical_modes = (
+        df.groupby(group_col)[categorical_cols]
+        .agg(lambda s: _mode_or_nan(s))
+        .reset_index()
+    )
+
+    behavioural_hour_mode = (
+        df.groupby(group_col)["TransactionStartTime"]
+        .agg(lambda s: int(s.dt.hour.mode().iloc[0]) if s.dt.hour.mode().size else None)
+        .reset_index()
+        .rename(columns={"TransactionStartTime": "most_common_transaction_hour"})
+    )
+
+    customer_df = numeric_agg.merge(recency_tenure, on=group_col, how="left")
+    if outlier_rates is not None:
+        customer_df = customer_df.merge(outlier_rates, on=group_col, how="left")
+    customer_df = customer_df.merge(categorical_modes, on=group_col, how="left")
+    customer_df = customer_df.merge(behavioural_hour_mode, on=group_col, how="left")
+
+    logger.info(
+        "Built customer-level feature table: %s customers from %s transactions",
+        customer_df.shape[0],
+        df.shape[0],
+    )
+    return customer_df
+
+
+def build_preprocessing_pipeline(
+    numeric_cols: list[str] | None = None,
+    categorical_cols: list[str] | None = None,
+) -> Pipeline:
+    """Impute + encode + scale a customer-level feature table (fit on TRAIN only)."""
+    numeric_cols = numeric_cols or [
+        "total_transaction_amount",
+        "avg_transaction_amount",
+        "std_transaction_amount",
+        "transaction_count",
+        "min_transaction_amount",
+        "max_transaction_amount",
+        "recency_days",
+        "tenure_days",
+        "most_common_transaction_hour",
+        "Amount_outlier_flag",
+        "Value_outlier_flag",
+        "PricingStrategy_outlier_flag",
+    ]
+    categorical_cols = categorical_cols or settings.categorical_cols
+
+    numeric_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+    categorical_pipeline = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("encoder", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("numeric", numeric_pipeline, numeric_cols),
+            ("categorical", categorical_pipeline, categorical_cols),
+        ],
+        remainder="drop",
+    )
+    pipeline = Pipeline(steps=[("preprocessor", preprocessor)])
+    # Keep column names through the pipeline (sklearn >= 1.2) so downstream
+    # consumers (SHAP, the API response, saved feature-name manifests) don't
+    # have to reverse-engineer positional array indices.
+    pipeline.set_output(transform="pandas")
+    return pipeline
+
+
+def get_output_feature_names(pipeline: Pipeline) -> list[str]:
+    """Recover human-readable column names for the ColumnTransformer output."""
+    preprocessor: ColumnTransformer = pipeline.named_steps["preprocessor"]
+    return list(preprocessor.get_feature_names_out())
+
+
+# --------- WOE/IV diagnostic (feature-selection report, not used for encoding) ------------
+
+def calculate_woe_iv(df: pd.DataFrame, categorical_cols: list[str], target_col: str) -> dict[str, float]:
+    """Information Value per categorical column — a standard credit-scoring
+    diagnostic for feature *selection*, kept separate from encoding (which
+    uses one-hot encoding inside the sklearn pipeline above for simplicity
+    and to avoid an extra heavyweight dependency for a modest feature set).
+    """
+    iv_dict: dict[str, float] = {}
+    eps = 1e-4
+    n_good = max(1, len(df[df[target_col] == 0]))
+    n_bad = max(1, len(df[df[target_col] == 1]))
 
     for col in categorical_cols:
-        lst = []
-        for val in df[col].unique():
-            total = len(df[df[col] == val])
-            good = len(df[(df[col] == val) & (df[target_col] == 0)])
-            bad = len(df[(df[col] == val) & (df[target_col] == 1)])
-            dist_good = good / max(1, len(df[df[target_col] == 0]))
-            dist_bad = bad / max(1, len(df[df[target_col] == 1]))
-
-            woe = np.log((dist_good + eps) / (dist_bad + eps))
-            iv = (dist_good - dist_bad) * woe
-            lst.append(iv)
-
-        iv_total = sum(lst)
+        iv_total = 0.0
+        for val in df[col].dropna().unique():
+            subset = df[df[col] == val]
+            good = len(subset[subset[target_col] == 0])
+            bad = len(subset[subset[target_col] == 1])
+            dist_good = good / n_good
+            dist_bad = bad / n_bad
+            woe = float(np.log((dist_good + eps) / (dist_bad + eps)))
+            iv_total += (dist_good - dist_bad) * woe
         iv_dict[col] = iv_total
-        print(f"Feature: {col}, IV: {iv_total:.4f}")
+        logger.info("Feature: %s, IV: %.4f", col, iv_total)
 
     return iv_dict
 
-# --------- Pipeline Builder -----------
-
-def build_feature_engineering_pipeline():
-    categorical_cols = ['ProductCategory', 'ChannelId', 'ProviderId']
-    numeric_cols = ['Amount', 'Value', 'PricingStrategy']
-
-    pipeline = Pipeline([
-        ('aggregate_features', AggregateFeatures(group_col='CustomerId')),
-        ('datetime_features', DatetimeFeatures(datetime_col='TransactionStartTime')),
-        ('cat_imputer', CategoricalImputer(categorical_cols=categorical_cols)),
-        ('cat_encoder', CategoricalEncoder(categorical_cols=categorical_cols)),
-        ('num_imputer_scaler', NumericImputerScaler(numeric_cols=numeric_cols)),
-    ])
-
-    return pipeline
 
 # --------- Example usage -----------
 
 if __name__ == "__main__":
-    df = pd.read_csv('data/processed/data_cleaned.csv')
+    from src.config import settings as _settings
 
-    pipeline = build_feature_engineering_pipeline()
-    df_transformed = pipeline.fit_transform(df)
-
-    # Calculate IV before encoding
-    iv_scores = calculate_woe_iv(df, categorical_cols=['ProductCategory', 'ChannelId', 'ProviderId'], target_col='FraudResult')
-
-    df_transformed.to_csv('data/processed/feature_engineered_data.csv', index=False)
-    print("✅ Saved feature engineered data to '../data/processed/feature_engineered_data.csv'")
+    df = pd.read_csv(_settings.cleaned_data_path)
+    customer_df = build_customer_features(df)
+    customer_df.to_csv(_settings.customer_features_path, index=False)
+    logger.info("Saved customer-level feature table to %s", _settings.customer_features_path)

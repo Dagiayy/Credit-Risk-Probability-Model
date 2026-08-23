@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mlflow:
     image: ghcr.io/mlflow/mlflow:latest
@@ -11,13 +9,38 @@ services:
     volumes:
       - ./mlruns:/app/mlruns
       - ./mlflow.db:/app/mlflow.db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   credit-risk-api:
     build: .
+    ports:
+      - "8000:8000"
     depends_on:
-      - mlflow
+      mlflow:
+        condition: service_healthy
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    # No source bind-mount here: the API image ships its own `src/` copy so
+    # a container always runs the code it was built from, not whatever the
+    # host's working tree happens to contain.
+
+  # One-off training job. Runs at customer grain end-to-end (raw data ->
+  # features -> proxy labels -> train -> evaluate -> conditionally promote).
+  # Not started by `docker-compose up`; run explicitly with:
+  #   docker-compose --profile train run --rm trainer
+  trainer:
+    build: .
+    profiles: ["train"]
+    depends_on:
+      mlflow:
+        condition: service_healthy
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
     volumes:
       - .:/app
-    command: python src/train.py
+    working_dir: /app
+    entrypoint: ["python", "-m", "src.train"]

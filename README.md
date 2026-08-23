@@ -1,241 +1,303 @@
-
-
 # Credit Risk Probability Model
 
-## Overview
+A credit-risk scoring service built for **Bati Bank's** Buy-Now-Pay-Later
+(BNPL) pilot with an eCommerce partner. It scores a customer's likelihood of
+default from their transaction behaviour — enabling responsible lending
+decisions for customers who have no traditional credit history.
 
-This project is part of **Bati Bank's initiative** to enable a Buy-Now-Pay-Later (BNPL) credit offering for an eCommerce partner. It predicts customer creditworthiness based on transaction behavior — enabling responsible lending decisions without relying on traditional credit histories.
-
----
-
-## 🔍 Project Goals
-
-* Build a proxy variable to classify customers as **high-risk or low-risk** based on transactions.
-* Engineer predictive features using **RFM metrics** and behavior patterns.
-* Train models to output:
-
-  * ✅ A **risk probability score** (likelihood of default)
-  * ✅ A **credit score** (on a human-friendly scale)
-  * ✅ **Loan amount/duration** recommendations
+There is no historical "did this customer default" label in the source data
+(the pilot hasn't lent to anyone yet), so the model is trained against a
+**proxy target**: an RFM (Recency/Frequency/Monetary) behavioural clustering
+that flags disengaged customers as higher-risk. See
+[Proxy target rationale](#proxy-target-rationale) below.
 
 ---
 
-## 📁 Project Structure
+## Table of contents
+
+- [Architecture](#architecture)
+- [Why customer-grain, not transaction-grain](#why-customer-grain-not-transaction-grain)
+- [Proxy target rationale](#proxy-target-rationale)
+- [Project structure](#project-structure)
+- [Getting started](#getting-started)
+- [Running the pipeline](#running-the-pipeline)
+- [Running the API](#running-the-api)
+- [Explainability](#explainability)
+- [Testing](#testing)
+- [Docker](#docker)
+- [CI/CD](#cicd)
+- [Configuration](#configuration)
+- [Data quality & validation](#data-quality--validation)
+- [Limitations & next steps](#limitations--next-steps)
+
+---
+
+## Architecture
+
+```
+Raw transactions CSV
+        |
+        v
+  [schema validation]          data_schema.py  (pandera contract, fail-fast)
+        |
+        v
+  [customer aggregation]       feature_eng_process.build_customer_features
+        |                      transaction rows -> ONE ROW PER CUSTOMER
+        v
+  [RFM + proxy labeling]       proxy_labeling.py  (KMeans on Recency/Frequency/Monetary)
+        |
+        v
+  [train/test split]           customer-grain split (train.py) -- see below
+        |
+        v
+  [preprocessing pipeline]     impute -> one-hot encode -> scale (fit on TRAIN only)
+        |
+        v
+  [model training]             LogisticRegression + RandomForest, MLflow-tracked
+        |
+        v
+  [MLflow Model Registry]      versioned model + `champion` alias
+        |
+        v
+  [FastAPI /api/v1/predict]    raw transactions in -> risk_probability + SHAP factors out
+```
+
+The feature pipeline fitted at training time is persisted (`joblib`) and
+logged as an MLflow artifact alongside the model it was trained with. The
+API and the batch `predict.py` CLI both load *that exact pipeline* — not a
+hand-reconstructed one — so serving-time features can never silently drift
+from what the model was trained on.
+
+## Why customer-grain, not transaction-grain
+
+The original version of this project aggregated features per customer (e.g.
+`total_transaction_amount`) and then **merged those aggregates onto every
+transaction row**, training on ~95k transaction rows with a customer-level
+label repeated across each customer's transactions. That has two serious
+problems for a model whose target is inherently defined per customer:
+
+1. **Leakage** — a customer's aggregate features are computed from *all* of
+   that customer's transactions, including ones that would later land in
+   the test split. A row's own held-out siblings leak into its features.
+2. **Pseudo-replication** — a customer with 500 transactions is worth 500x
+   the weight of a customer with 1 transaction, and a random train/test
+   split done at the row level lets the same customer appear on both sides.
+
+This project now aggregates to **one row per `CustomerId`** before
+splitting, imputing, encoding, or scaling. The model's unit of prediction
+(a customer) matches its unit of training, and the customer-grain train/test
+split is leak-free by construction.
+
+## Proxy target rationale
+
+Basel-II-style alternative-data credit scoring commonly proxies default risk
+with engagement clustering when no repayment history exists yet:
+`proxy_labeling.py` clusters customers on standardized Recency/Frequency/Monetary
+via KMeans (k configurable, default 3) and labels the least-engaged cluster
+(lowest combined frequency + monetary engagement) as `is_high_risk = 1`. The
+module logs the silhouette score and per-cluster RFM profile on every run so
+the choice is auditable rather than a black box — check the logs (or
+`reports/training_report.json`) before trusting a given run's labels.
+
+This proxy should be replaced with real repayment outcomes as soon as the
+BNPL pilot generates them; the codebase isolates it to `proxy_labeling.py`
+specifically so that swap is a one-module change.
+
+## Project structure
 
 ```
 credit-risk-model/
-├── .github/workflows/ci.yml        # ✅ CI/CD Pipeline (Task 6)
-├── data/                           # Raw + processed data
-├── notebooks/
-│   └── 1.0-eda.ipynb               # Exploratory Data Analysis
+├── .github/workflows/ci.yml     # Lint, test, coverage, Docker build check
+├── data/                        # Not committed — see data/README.md
+├── notebooks/1.0-eda.ipynb      # Exploratory analysis
+├── reports/                     # Generated: plots, training_report.json, risk_scores.csv
 ├── src/
-│   ├── train.py                    # Model training (Task 4 & 5)
-│   ├── predict.py                  # Inference script (Task 5)
-│   ├── data_processing.py          # Preprocessing utils
-│   ├── feature_eng_process.py      # Full feature pipeline
-│   └── api/                        # ✅ FastAPI Inference API (Task 6)
-│       ├── main.py                 # FastAPI app
-│       └── pydantic_models.py      # Input/output schemas
-├── tests/
-│   └── test_data_processing.py     # Unit tests (Task 5)
-├── Dockerfile                      # ✅ Docker container config (Task 6)
-├── docker-compose.yml              # ✅ Docker services incl. MLflow + API (Task 6)
-├── requirements.txt                # Python deps
-├── .gitignore                      # Ignore data/env
-└── README.md                       # You’re here!
+│   ├── config.py                 # Env-driven settings (single source of truth for paths/URIs/knobs)
+│   ├── logging_utils.py          # Structured logging setup
+│   ├── data_schema.py            # pandera schema — raw data contract
+│   ├── data_processing.py        # EDA utilities, data-quality report, outlier flags
+│   ├── feature_eng_process.py    # Customer-grain aggregation + preprocessing pipeline + IV diagnostic
+│   ├── proxy_labeling.py         # RFM + KMeans proxy target, with audit logging
+│   ├── model_registry.py         # Resolves the `champion` model + its paired feature pipeline
+│   ├── explainability.py         # SHAP per-prediction top factors
+│   ├── train.py                  # End-to-end training + conditional promotion
+│   ├── predict.py                # Batch scoring CLI
+│   └── api/
+│       ├── main.py               # FastAPI app: /health, /ready, /api/v1/predict
+│       └── pydantic_models.py    # Request/response schemas (raw transaction fields only)
+├── tests/                        # pytest suite (synthetic-data fixtures, no real dataset required)
+├── Dockerfile                    # API image (non-root, healthcheck)
+├── docker-compose.yml            # mlflow + credit-risk-api services, + `trainer` profile
+├── requirements.txt / requirements-dev.txt
+├── .env.example
+└── CHANGES.md                    # Detailed audit + upgrade log
 ```
 
----
-
-## 🔬 Data Processing & Feature Engineering
-
-### 🔎 Exploratory Data Analysis
-
-* \~95,000 transactions
-* Handled missing values, outliers, date features
-* Dropped constant/redundant features
-* Saved result to `data/processed/data_cleaned.csv`
-
-### 🧠 Feature Engineering (`feature_eng_process.py`)
-
-* Aggregates customer-level behavior (total spend, tx count, avg tx)
-* Extracts **hour, day, month** from timestamps
-* Fills missing values (mode/median)
-* Applies **WOE encoding** to categorical features (optbinning)
-* Calculates **Information Value (IV)** for feature selection
-* Scales numerical values (StandardScaler)
-* Outputs: `data/processed/feature_engineered_data.csv`
-
-To run:
+## Getting started
 
 ```bash
-python src/feature_eng_process.py
+python -m venv .venv
+source .venv/Scripts/activate      # Windows Git Bash; use .venv\Scripts\activate.bat on cmd
+pip install -r requirements-dev.txt
+cp .env.example .env               # optional — defaults work out of the box
 ```
 
----
+Place the raw Xente CSV at `data/raw/data.csv` (see `data/README.md`).
 
-## 🤖 Model Training & MLflow Tracking
+## Running the pipeline
 
-### 🏗️ Training & Evaluation (`src/train.py`)
-
-* Trains **Logistic Regression** and **Random Forest**
-* Uses:
-
-  * Accuracy, Precision, Recall, F1, ROC-AUC
-* Integrated with **MLflow**:
-
-  * Logs metrics, artifacts
-  * Registers model under `CreditRiskModel`
-  * Adds tags for "stage", "promoted\_by"
-
-### 🔁 Sample CLI:
+Start an MLflow tracking server (or point `MLFLOW_TRACKING_URI` at one you
+already have running):
 
 ```bash
-python src/train.py
+docker-compose up mlflow -d
+# MLflow UI: http://localhost:5000
 ```
 
----
-
-## 🧪 Unit Testing
-
-Unit tests (`test_data_processing.py`) validate:
-
-* Column dropping
-* Target splitting
-* Input-output formats
-
-To run:
+Train end-to-end (validates data, builds customer features, computes proxy
+labels, fits preprocessing on train only, trains + compares models, and
+promotes the winner to `champion` if it beats the current one):
 
 ```bash
-pytest tests/
+python -m src.train
 ```
 
----
+Batch-score a CSV of raw transactions:
 
-## ⚙️ Inference (`src/predict.py`)
+```bash
+python -m src.predict --input data/raw/data.csv --output reports/risk_scores.csv
+```
 
-* Loads model from **MLflow Model Registry**
-* Takes processed input and returns:
-
-  * `is_high_risk`: True/False
-  * `probability`: Risk score
-
----
-
-## 🚀 Task 6 – Model Deployment with FastAPI + CI/CD
-
-### ✅ FastAPI API (`src/api/main.py`)
-
-* `/predict` endpoint
-* Validates input via **Pydantic**
-* Loads model from MLflow
-* Returns credit risk prediction
-
-### ✅ Pydantic Schemas (`src/api/pydantic_models.py`)
-
-* `PredictionInput`: Defines required model features
-* `PredictionOutput`: Defines response schema
-
-### 🔧 Run API Locally
+## Running the API
 
 ```bash
 docker-compose up --build
+# API docs: http://localhost:8000/docs
+# Health:   http://localhost:8000/health   (liveness — always 200 once the process is up)
+# Ready:    http://localhost:8000/ready    (readiness — 503 until a champion model loads)
 ```
 
-Access docs at: [http://localhost:8000/docs](http://localhost:8000/docs)
-
----
-
-### 🧪 GitHub CI/CD Pipeline (`.github/workflows/ci.yml`)
-
-* Runs on push/pull to `main`
-* Steps:
-
-  * Install dependencies
-  * Run `flake8` linting
-  * Run `pytest`
-
-```yaml
-# Simplified
-on: [push]
-jobs:
-  ci:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install -r requirements.txt
-      - run: flake8 src/
-      - run: pytest tests/
-```
-
----
-
-## 🐳 Docker Setup
-
-### Dockerfile
-
-Builds image for model training and API inference.
-
-### docker-compose.yml
-
-* Starts **MLflow server**
-* Starts **credit-risk-api** (FastAPI)
-* Mounts volume for model artifacts
-
----
-
-## 📊 Business Value
-
-* Aligned with **Basel II** for explainable credit models
-* Enables **responsible BNPL lending**
-* Supports **regulatory transparency** via WOE encoding & scoring
-
----
-
-## 🛠️ Next Steps
-
-* Integrate with **real-time API scoring**
-* Add **auto-retraining** + drift detection
-* Use **SHAP/LIME** for black-box explainability
-* Expand feature set using **alternative data sources**
-* Add **loan recommendation engine**
-
----
-
-## ✅ Quickstart
+Or locally without Docker (with an MLflow server running and a champion
+model already trained):
 
 ```bash
-# 1. Clone the repo
-git clonehttps://github.com/Dagiayy/Credit-Risk-Probability-Model.git.git
-cd credit-risk-model
-
-# 2. Install deps
-pip install -r requirements.txt
-
-# 3. Run model training
-python src/train.py
-
-# 4. Run API in Docker
-docker-compose up --build
-
-# 5. Access
-MLflow:         http://localhost:5000
-API docs:       http://localhost:8000/docs
+uvicorn src.api.main:app --reload
 ```
 
----
+Example request — score one customer from their raw transaction history
+(this is the important change from the original API: it takes raw
+transaction fields, not ~30 pre-engineered features, and it never accepts
+`FraudResult`, which would leak the answer):
 
-## 📚 References
+```bash
+curl -X POST "http://localhost:8000/api/v1/predict?explain=true" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transactions": [
+      {
+        "TransactionId": "T1", "BatchId": "B1", "AccountId": "A1",
+        "SubscriptionId": "S1", "CustomerId": "C1", "CurrencyCode": "UGX",
+        "CountryCode": "256", "ProviderId": "ProviderId_1", "ProductId": "ProductId_1",
+        "ProductCategory": "airtime", "ChannelId": "ChannelId_1",
+        "Amount": 1000, "Value": 1000,
+        "TransactionStartTime": "2019-03-01T12:00:00", "PricingStrategy": 2
+      }
+    ]
+  }'
+```
 
-* [Basel II Accord – BIS](https://www.bis.org)
-* [World Bank Credit Scoring](https://worldbank.org)
-* [Interpretable Machine Learning (SHAP, WOE)](https://christophm.github.io/interpretable-ml-book/)
+Response:
 
----
+```json
+{
+  "customer_id": "C1",
+  "risk_probability": 0.31,
+  "is_high_risk": false,
+  "risk_band": "medium",
+  "model_version": "3",
+  "top_factors": [
+    {"feature": "numeric__recency_days", "shap_value": 0.12, "direction": "increases_risk"}
+  ]
+}
+```
 
-> 🙏 Thank you for reviewing this project! Contributions, feedback, and improvements are welcome.
+## Explainability
 
----
+`?explain=true` runs SHAP (`TreeExplainer` for tree models, falling back to
+a model-agnostic explainer) against the served model and returns the
+top-5 features that pushed the score up or down. This exists because credit
+scoring is regulated: Basel II expects lenders to be able to justify a
+decision, not just produce a number.
+
+## Testing
+
+```bash
+pytest tests/ --cov=src --cov-report=term-missing
+```
+
+The suite runs entirely on synthetic fixtures (`tests/conftest.py`) — no
+real dataset or running MLflow server required. It covers: schema
+validation, customer-grain aggregation correctness (including the leakage
+fix — see `test_build_customer_features_transaction_count_matches_source`),
+the preprocessing pipeline's train/transform column stability, proxy
+labeling, config overrides, and the API (health/ready/predict, including a
+regression test asserting `FraudResult` can never be part of the request
+schema).
+
+## Docker
+
+```bash
+docker-compose up --build              # mlflow + credit-risk-api
+docker-compose --profile train run --rm trainer   # one-off training job
+```
+
+The API image only ships `src/` (see `.dockerignore`) — it loads its model
+from the MLflow registry, so it never needs the raw dataset or notebooks.
+The `trainer` service bind-mounts the repo because training needs
+`data/` and writes `reports/`.
+
+## CI/CD
+
+`.github/workflows/ci.yml` runs on every push and PR to `main`: flake8,
+pytest with coverage, and a Docker build-verification job.
+
+## Configuration
+
+Every path, URI, and tunable lives in `src/config.py` (pydantic-settings),
+overridable via environment variables or `.env` — see `.env.example`. Key
+knobs: `MLFLOW_TRACKING_URI`, `MODEL_ALIAS` (defaults to `champion`),
+`N_RISK_CLUSTERS`, `TEST_SIZE`, `PROMOTION_MIN_ROC_AUC_GAIN`.
+
+Promotion to `champion` is not automatic-by-default: `train.py` only moves
+the alias if the new model's ROC-AUC is at least as good as the current
+champion's (configurable via `PROMOTION_MIN_ROC_AUC_GAIN`), so a bad
+retraining run can't silently regress production.
+
+## Data quality & validation
+
+`src/data_schema.py` defines a pandera contract for the raw dataset (column
+presence, types, `FraudResult ∈ {0,1}`, non-negative `Value`, unique
+`TransactionId`). `load_data()` validates against it by default and raises
+`DataValidationError` with a readable failure summary rather than letting a
+malformed CSV silently corrupt downstream features.
+
+## Limitations & next steps
+
+- **Proxy labels, not real outcomes.** Replace `proxy_labeling.py`'s
+  clustering with actual repayment/default data as soon as the BNPL pilot
+  produces it, and re-validate that WOE/IV-style feature relationships still
+  hold against real defaults.
+- **Cold-start customers.** A customer with only one transaction gets
+  `std_transaction_amount = 0` and no meaningful recency signal — the model
+  will be systematically less confident here; consider a minimum-history
+  gate or a separate cold-start heuristic before using this for lending
+  decisions on brand-new customers.
+- **No drift monitoring yet.** `model_registry.get_champion_metrics()` and
+  `reports/training_report.json` give you a manual before/after comparison
+  each retrain; there's no automated data/prediction drift detection in
+  production. A reasonable next step is periodic population-stability-index
+  checks on `risk_probability` against the training distribution.
+- **Single-region behavioural assumption.** RFM windows and outlier
+  thresholds are computed globally; if the customer base spans very
+  different transaction cadences (e.g. business vs. consumer accounts),
+  segment-specific thresholds would likely improve the proxy label quality.

@@ -1,6 +1,10 @@
-# Ignore data folders
-data/
+# Ignore data folders (but keep data/README.md, which documents the expected layout)
+data/*
+!data/README.md
 models/
+reports/
+*.joblib
+mlflow.db
 __pycache__/
 *.pyc
 .ipynb_checkpoints/

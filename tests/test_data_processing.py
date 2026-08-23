@@ -1,38 +1,49 @@
-import pytest # type: ignore
-import sys
-import os
 import pandas as pd
 
+from src.data_processing import (
+    add_outlier_flags,
+    data_quality_report,
+    detect_outliers,
+    duplicate_report,
+    missing_values,
+)
 
-# Add project root and src folder to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
-from train import preprocess
+def test_add_outlier_flags_drops_constant_country_code(raw_transactions_df):
+    df = add_outlier_flags(raw_transactions_df)
+    assert "CountryCode" not in df.columns  # constant column, single UGX country code
+    assert "Amount_outlier_flag" in df.columns
+    assert set(df["Amount_outlier_flag"].unique()) <= {0, 1}
 
-def test_preprocess_features():
-    # Create sample dataframe mimicking your real data structure
-    data = {
-        'Feature1': [1, 2, 3],
-        'Feature2': [4, 5, 6],
-        'is_high_risk': [0, 1, 0],
-        'CustomerId': [10, 11, 12]
-    }
-    df = pd.DataFrame(data)
 
-    # Run the function
-    X, y = preprocess(df)
+def test_add_outlier_flags_keeps_varying_columns(raw_transactions_df):
+    df = raw_transactions_df.copy()
+    df.loc[df.index[0], "CountryCode"] = "999"  # introduce variance
+    out = add_outlier_flags(df)
+    assert "CountryCode" in out.columns
 
-    # Assert the target column is removed from features
-    assert 'is_high_risk' not in X.columns, "Target column should not be in features"
 
-    # Assert CustomerId remains in original df but not in features
-    assert 'CustomerId' in df.columns, "CustomerId should be present in original DataFrame"
-    assert 'CustomerId' in df.columns, "CustomerId should be present in original DataFrame"
-    assert 'CustomerId' not in X.columns, "CustomerId should not be in features"
+def test_missing_values_reports_only_nonzero_columns():
+    df = pd.DataFrame({"a": [1, None, 3], "b": [1, 2, 3]})
+    report = missing_values(df)
+    assert list(report.index) == ["a"]
+    assert report["a"] == 1
 
-    # Assert y is equal to the target column values
-    assert y.tolist() == [0, 1, 0], "Target values do not match expected"
 
-    # Assert feature columns are as expected
-    expected_features = {'Feature1', 'Feature2'}
-    assert set(X.columns) == expected_features, f"Features columns mismatch. Expected {expected_features}, got {set(X.columns)}"
+def test_duplicate_report(raw_transactions_df):
+    df = pd.concat([raw_transactions_df, raw_transactions_df.iloc[[0]]], ignore_index=True)
+    report = duplicate_report(df)
+    assert report["exact_duplicate_rows"] == 1
+    assert report["duplicate_TransactionId"] == 1
+
+
+def test_detect_outliers_returns_counts_per_numeric_column(raw_transactions_df):
+    counts = detect_outliers(raw_transactions_df)
+    assert "Amount" in counts
+    assert counts["Amount"] >= 0
+
+
+def test_data_quality_report_shape(raw_transactions_df):
+    report = data_quality_report(raw_transactions_df)
+    assert report["n_rows"] == len(raw_transactions_df)
+    assert report["n_customers"] == raw_transactions_df["CustomerId"].nunique()
