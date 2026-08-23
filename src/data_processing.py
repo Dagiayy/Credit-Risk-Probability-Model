@@ -1,59 +1,138 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
+"""EDA utilities and raw-data ingestion for the Xente transactions dataset.
 
-# Load Data
-def load_data(path="data/Data/data.csv"):
+`load_data` is the single point where a CSV on disk becomes a validated
+dataframe: it enforces the schema in `data_schema.py` so downstream stages
+(feature engineering, labeling, training) can assume clean, typed input
+instead of re-deriving assumptions about the data ad hoc.
+"""
+from __future__ import annotations
+
+import os
+from typing import Dict
+
+import matplotlib
+
+matplotlib.use("Agg")  # headless-safe: never try to open a GUI window
+import matplotlib.pyplot as plt  # noqa: E402
+import pandas as pd  # noqa: E402
+import seaborn as sns  # noqa: E402
+
+from src.config import settings  # noqa: E402
+from src.data_schema import validate_raw_transactions  # noqa: E402
+from src.logging_utils import get_logger  # noqa: E402
+
+logger = get_logger(__name__)
+
+
+def load_data(path: str | None = None, validate: bool = True) -> pd.DataFrame:
+    """Load the raw transactions CSV, optionally validating it against the schema."""
+    path = path or str(settings.raw_data_path)
     df = pd.read_csv(path)
-    print(f"✅ Data loaded: {df.shape[0]} rows, {df.shape[1]} columns")
+    logger.info("Loaded raw data: %s rows, %s columns from %s", df.shape[0], df.shape[1], path)
+    if validate:
+        df = validate_raw_transactions(df)
+        logger.info("Raw data passed schema validation")
     return df
 
-# Overview
-def overview(df):
-    print("🔎 Data Overview")
-    print("Shape:", df.shape)
-    print("\nData Types:\n", df.dtypes)
-    print("\nFirst 5 Rows:\n", df.head())
 
-# Summary
-def summary_statistics(df):
-    print("📊 Summary Statistics")
-    return df.describe()
+def overview(df: pd.DataFrame) -> None:
+    logger.info("Data overview — shape=%s", df.shape)
+    logger.info("Dtypes:\n%s", df.dtypes)
+    logger.info("Head:\n%s", df.head())
 
-# Numerical Distribution
-def plot_numerical_distributions(df, output_folder="notebooks/plots/"):
-    os.makedirs(output_folder, exist_ok=True)
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
 
+def summary_statistics(df: pd.DataFrame) -> pd.DataFrame:
+    return df.describe(include="all")
+
+
+def missing_values(df: pd.DataFrame) -> pd.Series:
+    missing = df.isnull().sum()
+    return missing[missing > 0]
+
+
+def duplicate_report(df: pd.DataFrame, key_col: str = "TransactionId") -> Dict[str, int]:
+    """Report exact row duplicates and duplicate primary keys."""
+    report = {
+        "exact_duplicate_rows": int(df.duplicated().sum()),
+    }
+    if key_col in df.columns:
+        report[f"duplicate_{key_col}"] = int(df[key_col].duplicated().sum())
+    return report
+
+
+def detect_outliers(df: pd.DataFrame) -> Dict[str, int]:
+    numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns
+    outlier_counts: Dict[str, int] = {}
     for col in numeric_cols:
+        q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+        iqr = q3 - q1
+        outliers = df[(df[col] < q1 - 1.5 * iqr) | (df[col] > q3 + 1.5 * iqr)]
+        outlier_counts[col] = len(outliers)
+    return outlier_counts
+
+
+def add_outlier_flags(df: pd.DataFrame, numeric_cols: list[str] | None = None) -> pd.DataFrame:
+    """Add boolean outlier-flag columns (IQR method) and drop constant columns."""
+    df = df.copy()
+    if "CountryCode" in df.columns and df["CountryCode"].nunique(dropna=False) <= 1:
+        df = df.drop(columns=["CountryCode"])
+
+    numeric_cols = numeric_cols or settings.numeric_cols
+    for col in numeric_cols:
+        if col not in df.columns:
+            continue
+        q1, q3 = df[col].quantile(0.25), df[col].quantile(0.75)
+        iqr = q3 - q1
+        lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+        df[f"{col}_outlier_flag"] = ((df[col] < lower) | (df[col] > upper)).astype(int)
+
+    return df
+
+
+def data_quality_report(df: pd.DataFrame) -> Dict[str, object]:
+    """A single consolidated report used both in the notebook and by CI smoke checks."""
+    return {
+        "n_rows": int(df.shape[0]),
+        "n_cols": int(df.shape[1]),
+        "n_customers": int(df["CustomerId"].nunique()) if "CustomerId" in df else None,
+        "missing_values": missing_values(df).to_dict(),
+        "duplicates": duplicate_report(df),
+        "outliers_iqr": detect_outliers(df),
+    }
+
+
+def plot_numerical_distributions(df: pd.DataFrame, output_folder: str | None = None) -> None:
+    output_folder = output_folder or str(settings.plots_dir)
+    os.makedirs(output_folder, exist_ok=True)
+    for col in df.select_dtypes(include=["int64", "float64"]).columns:
         plt.figure(figsize=(6, 4))
         df[col].hist(bins=50)
-        plt.title(f'Distribution of {col}')
+        plt.title(f"Distribution of {col}")
         plt.xlabel(col)
         plt.ylabel("Frequency")
         plt.tight_layout()
-        plt.savefig(f"{output_folder}{col}_hist.png")
+        plt.savefig(os.path.join(output_folder, f"{col}_hist.png"))
         plt.close()
 
-# Categorical Distribution
-def plot_categorical_distributions(df, output_folder="notebooks/plots/"):
-    os.makedirs(output_folder, exist_ok=True)
-    cat_cols = df.select_dtypes(include=['object', 'category']).columns
 
-    for col in cat_cols:
+def plot_categorical_distributions(df: pd.DataFrame, output_folder: str | None = None) -> None:
+    output_folder = output_folder or str(settings.plots_dir)
+    os.makedirs(output_folder, exist_ok=True)
+    for col in df.select_dtypes(include=["object", "category"]).columns:
         plt.figure(figsize=(6, 4))
-        df[col].value_counts().nlargest(10).plot(kind='bar')
-        plt.title(f'Top 10 Categories in {col}')
+        df[col].value_counts().nlargest(10).plot(kind="bar")
+        plt.title(f"Top 10 Categories in {col}")
         plt.ylabel("Frequency")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.savefig(f"{output_folder}{col}_bar.png")
+        plt.savefig(os.path.join(output_folder, f"{col}_bar.png"))
         plt.close()
 
-# Correlation Matrix
-def correlation_matrix(df, output_file="notebooks/plots/correlation_matrix.png"):
-    numeric_df = df.select_dtypes(include=['int64', 'float64'])
+
+def correlation_matrix(df: pd.DataFrame, output_file: str | None = None) -> pd.DataFrame:
+    output_file = output_file or os.path.join(str(settings.plots_dir), "correlation_matrix.png")
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    numeric_df = df.select_dtypes(include=["int64", "float64"])
     corr = numeric_df.corr()
 
     plt.figure(figsize=(10, 8))
@@ -62,65 +141,23 @@ def correlation_matrix(df, output_file="notebooks/plots/correlation_matrix.png")
     plt.tight_layout()
     plt.savefig(output_file)
     plt.close()
-
-# Missing Values
-def missing_values(df):
-    print("🕳 Missing Values:")
-    missing = df.isnull().sum()
-    return missing[missing > 0]
-
-# Outlier Detection
-def detect_outliers(df):
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
-    outlier_data = {}
-
-    for col in numeric_cols:
-        q1 = df[col].quantile(0.25)
-        q3 = df[col].quantile(0.75)
-        iqr = q3 - q1
-        outliers = df[(df[col] < q1 - 1.5 * iqr) | (df[col] > q3 + 1.5 * iqr)]
-        outlier_data[col] = len(outliers)
-
-    return outlier_data
-def add_outlier_flags(df):
-    """
-    Adds new boolean columns indicating if a value in certain numeric columns is an outlier based on IQR method.
-    Drops 'CountryCode' column as it has no variance.
-    """
-    # Drop constant column
-    if 'CountryCode' in df.columns:
-        df = df.drop(columns=['CountryCode'])
-
-    numeric_cols = ['Amount', 'Value', 'PricingStrategy']
-    for col in numeric_cols:
-        if col in df.columns:
-            q1 = df[col].quantile(0.25)
-            q3 = df[col].quantile(0.75)
-            iqr = q3 - q1
-            lower_bound = q1 - 1.5 * iqr
-            upper_bound = q3 + 1.5 * iqr
-            
-            # Create flag column, 1 if outlier, 0 otherwise
-            flag_col = f"{col}_outlier_flag"
-            df[flag_col] = ((df[col] < lower_bound) | (df[col] > upper_bound)).astype(int)
-
-    return df
+    return corr
 
 
-def plot_boxplots(df, output_folder="notebooks/plots/boxplots/"):
+def plot_boxplots(df: pd.DataFrame, output_folder: str | None = None) -> None:
+    output_folder = output_folder or os.path.join(str(settings.plots_dir), "boxplots")
     os.makedirs(output_folder, exist_ok=True)
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
-
-    for col in numeric_cols:
+    for col in df.select_dtypes(include=["int64", "float64"]).columns:
         plt.figure(figsize=(6, 4))
         sns.boxplot(x=df[col])
-        plt.title(f'Boxplot of {col}')
+        plt.title(f"Boxplot of {col}")
         plt.tight_layout()
-        plt.savefig(f"{output_folder}{col}_boxplot.png")
+        plt.savefig(os.path.join(output_folder, f"{col}_boxplot.png"))
         plt.close()
 
-# Save
-def save_processed_data(df, path="data/processed/data_cleaned.csv"):
+
+def save_processed_data(df: pd.DataFrame, path: str | None = None) -> None:
+    path = path or str(settings.cleaned_data_path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     df.to_csv(path, index=False)
-    print(f"💾 Saved cleaned data to: {path}")
+    logger.info("Saved cleaned data to: %s (%s rows)", path, len(df))
