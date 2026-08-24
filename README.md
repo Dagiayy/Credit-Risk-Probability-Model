@@ -15,6 +15,7 @@ that flags disengaged customers as higher-risk. See
 
 ## Table of contents
 
+- [Engineering Audit & Upgrades](#engineering-audit--upgrades)
 - [Architecture](#architecture)
 - [Why customer-grain, not transaction-grain](#why-customer-grain-not-transaction-grain)
 - [Proxy target rationale](#proxy-target-rationale)
@@ -29,6 +30,20 @@ that flags disengaged customers as higher-risk. See
 - [Configuration](#configuration)
 - [Data quality & validation](#data-quality--validation)
 - [Limitations & next steps](#limitations--next-steps)
+
+---
+
+## Engineering Audit & Upgrades
+
+This repository has undergone a comprehensive senior-level engineering audit and upgrade pass to bring the credit risk pipeline from prototype to production-grade quality. For full details on issues identified (P0/P1/P2) and specific technical remediations, see [`CHANGES.md`](CHANGES.md).
+
+### Key Upgrade Highlights
+- **Target Leakage Fix:** Eliminated `FraudResult` leakage from request schemas (`CustomerTransactionsRequest`). FastAPI serving runs feature pipelines on raw transaction inputs.
+- **Customer-Grain Aggregation:** Standardized feature engineering to aggregate transaction history per `CustomerId` before splitting, ensuring leak-free train/test evaluation.
+- **Explainability:** Added SHAP-based (`TreeExplainer` / `KernelExplainer`) local factor attributions via `?explain=true` parameter on prediction endpoints to meet Basel-II regulatory transparency standards.
+- **Model Promotion & Registry:** Integrated MLflow Model Registry alias resolution (`champion`) with automated ROC-AUC gain promotion gates to prevent serving performance regressions.
+- **Data Validation & Quality:** Integrated `pandera` data contracts (`src/data_schema.py`) and consolidated data quality reporting (`duplicate_report`, `data_quality_report`).
+- **Production DevOps & API:** Replaced inline execution with FastAPI `lifespan` handler, readiness/liveness health probes (`/health`, `/ready`), non-root Docker runtime, and GitHub Actions CI workflow.
 
 ---
 
@@ -129,9 +144,14 @@ credit-risk-model/
 ├── Dockerfile                    # API image (non-root, healthcheck)
 ├── docker-compose.yml            # mlflow + credit-risk-api services, + `trainer` profile
 ├── requirements.txt / requirements-dev.txt
+├── Makefile                      # `make test`, `make train`, `make api`, `make docker-up`, ...
+├── .flake8 / pyproject.toml      # Lint (flake8) and format (black) config
 ├── .env.example
 └── CHANGES.md                    # Detailed audit + upgrade log
 ```
+
+Common tasks are also wrapped in the `Makefile` — e.g. `make install`, `make test`, `make lint`,
+`make train`, `make api`, `make docker-up` — see `Makefile` for the full list.
 
 ## Getting started
 

@@ -1,3 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "credit-risk-model"
+version = "1.0.0"
+description = "Credit Risk Probability Model & BNPL Scoring API for eCommerce Partner"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Dagmawi Ayenew", email = "ayenewdagmawi@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "mlflow",
+    "shap",
+    "pandera",
+    "pydantic-settings"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [tool.black]
 line-length = 110
 target-version = ["py312"]
